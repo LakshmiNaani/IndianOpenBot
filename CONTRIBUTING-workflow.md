@@ -262,27 +262,33 @@ There used to be two — `master` and `main` — holding the same commit. Collap
   called `main` sitting next to `upstream/master` is an invitation to type
   `git merge upstream/main`, which fails in a confusing way. Same name on both sides
   removes the ambiguity entirely.
-- **`.bare`'s `HEAD` already points at `master`**, so nothing local has to change.
+- **`master` is your fork's default branch on GitHub**, inherited from ob-f/OpenBot, and
+  what `.bare`'s `HEAD` points at. Keeping it means neither has to change.
 - **One mirror is the point.** It is the single place upstream enters this repo, so every
   other branch merges from one trusted definition of "what upstream is" rather than each
   hitting the network with its own idea of it.
 
-The fork itself was on `main`, not `master` — GitHub renamed it at some point, so it did
-*not* inherit ob-f's branch name. That made three names for one lineage:
-`upstream/master`, `origin/main`, local `master`. Resolved 2026-08-05 by renaming the
-fork's branch to `master` as well:
+A stray `origin/main` existed briefly, created by an earlier version of §6 that said
+`git push origin main` while the local mirror was still called `main`. Deleted
+2026-08-05. The fork now has exactly one mirror branch, `master`, matching upstream's
+name and the local one.
+
+Local `master` must **track** it:
 
 ```bash
-git push origin master                        # publish, creating origin/master
-# GitHub -> Settings -> Branches -> set default branch to master
-git push origin --delete main                 # only works once the default has moved
 git branch --set-upstream-to=origin/master master
 ```
 
-That last line matters. Local `master` was created by the collapse and tracked nothing,
-so `git push origin master` would silently create a *second* remote branch rather than
-update the existing one, and `git status` would never report being ahead. Set tracking
-and both problems go away.
+The branch created by the collapse tracked nothing, so `git status` never reported being
+ahead and `origin/master` silently fell three commits behind. With tracking set,
+`git status -sb` shows the drift on the first line.
+
+> **Do not trust `refs/remotes/origin` unless a fetch has actually succeeded.** For most
+> of 2026-08-05 origin fetches failed with `Permission denied (publickey)`, so
+> `git branch -r` showed a stale, partial list — `origin/master` was missing entirely and
+> was briefly misread as "the fork has no master". Run
+> `ssh-add --apple-use-keychain ~/.ssh/id_ed25519 && git fetch origin --prune` before
+> drawing any conclusion about what exists on the fork.
 
 ### `master` vs `integration`
 
