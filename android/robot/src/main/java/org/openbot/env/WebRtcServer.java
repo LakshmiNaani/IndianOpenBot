@@ -10,6 +10,10 @@ import android.view.TextureView;
 import androidx.core.content.ContextCompat;
 import com.pedro.rtplibrary.view.OpenGlView;
 import java.util.ArrayList;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.Queue;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.openbot.utils.AndGate;
@@ -76,7 +80,13 @@ public class WebRtcServer implements IVideoServer {
   AudioSource audioSource;
   AudioTrack localAudioTrack;
   SurfaceTextureHelper surfaceTextureHelper;
-  private PeerConnection peerConnection;
+  // One PeerConnection per connected viewer (browser tab/machine) - a single RTCPeerConnection
+  // can only ever stream to one remote peer, so multi-viewer support requires one per viewerId.
+  private final Map<String, PeerConnection> peerConnections = new ConcurrentHashMap<>();
+  // Viewers that joined the room before the camera/tracks were ready; drained once they are.
+  private final Queue<String> pendingViewerIds = new ConcurrentLinkedQueue<>();
+  private volatile boolean readyForCalls = false;
+  private static final int MAX_VIEWERS = 4;
   MediaStream mediaStream;
 
   private AndGate andGate;
@@ -172,12 +182,17 @@ public class WebRtcServer implements IVideoServer {
     initializeSurfaceViews();
     initializePeerConnectionFactory();
     createVideoTrackFromCameraAndShowIt();
-    initializePeerConnections();
 
     startStreamingVideo();
-    doCall();
     startClient();
     monitorCameraControlEvents();
+
+    // Camera/tracks are ready - start calls for any viewer that joined the room earlier.
+    readyForCalls = true;
+    String viewerId;
+    while ((viewerId = pendingViewerIds.poll()) != null) {
+      startCallFor(viewerId);
+    }
   }
 
   private void monitorCameraControlEvents() {
@@ -199,7 +214,11 @@ public class WebRtcServer implements IVideoServer {
         );
   }
 
-  private void doAnswer() {
+  private void doAnswer(String viewerId) {
+    PeerConnection peerConnection = peerConnections.get(viewerId);
+    if (peerConnection == null) {
+      return;
+    }
     peerConnection.createAnswer(
         new SimpleSdpObserver() {
           @Override
@@ -209,7 +228,7 @@ public class WebRtcServer implements IVideoServer {
             try {
               message.put("type", "answer");
               message.put("sdp", sessionDescription.description);
-              sendMessage(message);
+              sendMessage(message, viewerId);
             } catch (JSONException e) {
               e.printStackTrace();
             }
@@ -222,14 +241,21 @@ public class WebRtcServer implements IVideoServer {
     mediaStream = factory.createLocalMediaStream("ARDAMS");
     mediaStream.addTrack(videoTrackFromCamera);
     mediaStream.addTrack(localAudioTrack);
-    peerConnection.addStream(mediaStream);
   }
 
   private void stopStreamingVideo() {
-    peerConnection.removeStream(mediaStream);
+    for (PeerConnection peerConnection : peerConnections.values()) {
+      peerConnection.removeStream(mediaStream);
+    }
   }
 
   private void stopServer() {
+    for (PeerConnection peerConnection : peerConnections.values()) {
+      peerConnection.close();
+    }
+    peerConnections.clear();
+    pendingViewerIds.clear();
+    readyForCalls = false;
     mediaStream.removeTrack(videoTrackFromCamera);
     mediaStream.removeTrack(localAudioTrack);
     view.release();
@@ -240,7 +266,25 @@ public class WebRtcServer implements IVideoServer {
     BotToControllerEventBus.emitEvent(ConnectionUtils.createStatus("VIDEO_COMMAND", "STOP"));
   }
 
-  private void doCall() {
+  // Starts a fresh WebRTC session (its own PeerConnection + SDP offer) for one newly-joined
+  // viewer, without disturbing any other viewer's already-running session.
+  private void startCallFor(String viewerId) {
+    if (!readyForCalls) {
+      pendingViewerIds.add(viewerId);
+      return;
+    }
+    if (peerConnections.containsKey(viewerId)) {
+      return;
+    }
+    if (peerConnections.size() >= MAX_VIEWERS) {
+      Log.d(TAG, "startCallFor: ignoring viewer " + viewerId + ", MAX_VIEWERS reached");
+      return;
+    }
+
+    PeerConnection peerConnection = createPeerConnection(factory, viewerId);
+    peerConnections.put(viewerId, peerConnection);
+    peerConnection.addStream(mediaStream);
+
     MediaConstraints sdpMediaConstraints = new MediaConstraints();
 
     sdpMediaConstraints.mandatory.add(
@@ -258,7 +302,7 @@ public class WebRtcServer implements IVideoServer {
               message.put("type", "offer");
               message.put("sdp", sessionDescription.description);
 
-              sendMessage(message);
+              sendMessage(message, viewerId);
             } catch (JSONException e) {
               e.printStackTrace();
             }
@@ -267,11 +311,16 @@ public class WebRtcServer implements IVideoServer {
         sdpMediaConstraints);
   }
 
-  private void initializePeerConnections() {
-    peerConnection = createPeerConnection(factory);
+  // Tears down one viewer's session, e.g. when their tab/browser disconnects.
+  private void stopCallFor(String viewerId) {
+    pendingViewerIds.remove(viewerId);
+    PeerConnection peerConnection = peerConnections.remove(viewerId);
+    if (peerConnection != null) {
+      peerConnection.close();
+    }
   }
 
-  private PeerConnection createPeerConnection(PeerConnectionFactory factory) {
+  private PeerConnection createPeerConnection(PeerConnectionFactory factory, String viewerId) {
     ArrayList<PeerConnection.IceServer> iceServers = new ArrayList<>();
 
     PeerConnection.IceServer stunServer =
@@ -322,7 +371,7 @@ public class WebRtcServer implements IVideoServer {
               message.put("candidate", iceCandidate.sdp);
 
               Log.d(TAG, "onIceCandidate: sending candidate " + message);
-              sendMessage(message);
+              sendMessage(message, viewerId);
             } catch (JSONException e) {
               e.printStackTrace();
             }
@@ -370,8 +419,14 @@ public class WebRtcServer implements IVideoServer {
 
     return factory.createPeerConnection(rtcConfig, pcConstraints, pcObserver);
   }
-  private void sendMessage(JSONObject message) {
-    BotToControllerEventBus.emitEvent(ConnectionUtils.createStatus("WEB_RTC_EVENT", message));
+  private void sendMessage(JSONObject message, String viewerId) {
+    JSONObject status = ConnectionUtils.createStatus("WEB_RTC_EVENT", message);
+    try {
+      status.put("viewerId", viewerId);
+    } catch (JSONException e) {
+      throw new RuntimeException(e);
+    }
+    BotToControllerEventBus.emitEvent(status);
   }
 
   private void createVideoTrackFromCameraAndShowIt() {
@@ -465,7 +520,12 @@ public class WebRtcServer implements IVideoServer {
       ControllerToBotEventBus.subscribe(
           "WEB_RTC_COMMANDS",
           event -> {
-            String commandType = "";
+            String viewerId = event.optString("viewerId", null);
+            PeerConnection peerConnection = viewerId == null ? null : peerConnections.get(viewerId);
+            if (peerConnection == null) {
+              Log.d(TAG, "handleControllerWebRtcEvents: no PeerConnection for viewerId " + viewerId);
+              return;
+            }
             JSONObject webRtcEvent = event.getJSONObject("webrtc_event");
             String type = webRtcEvent.getString("type");
             switch (type) {
@@ -475,7 +535,7 @@ public class WebRtcServer implements IVideoServer {
                     new SimpleSdpObserver(),
                     new SessionDescription(
                         SessionDescription.Type.OFFER, webRtcEvent.getString("sdp")));
-                doAnswer();
+                doAnswer(viewerId);
                 break;
 
               case "answer":
@@ -500,11 +560,32 @@ public class WebRtcServer implements IVideoServer {
           commandJsn ->
               commandJsn.has("webrtc_event") // filter out all non "webrtc_event" messages.
           );
+
+      ControllerToBotEventBus.subscribe(
+          "WEB_RTC_PEER_LIFECYCLE",
+          event -> {
+            String viewerId = event.getString("viewerId");
+            switch (event.getString("command")) {
+              case "PEER_JOINED":
+                startCallFor(viewerId);
+                break;
+
+              case "PEER_LEFT":
+                stopCallFor(viewerId);
+                break;
+            }
+          },
+          error -> Log.d(TAG, "Error occurred in handleControllerWebRtcEvents (peer lifecycle): %s", error),
+          commandJsn ->
+              commandJsn.has("command")
+                  && ("PEER_JOINED".equals(commandJsn.optString("command"))
+                      || "PEER_LEFT".equals(commandJsn.optString("command"))));
     }
 
     public void shutDown() {
       // Not used
       ControllerToBotEventBus.unsubscribe("WEB_RTC_COMMANDS");
+      ControllerToBotEventBus.unsubscribe("WEB_RTC_PEER_LIFECYCLE");
     }
   }
 }

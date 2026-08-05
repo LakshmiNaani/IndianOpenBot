@@ -124,8 +124,7 @@ public class PhoneController {
   }
 
   private void nodeServerConnect() {
-//     String serverUrl = "ws://verdant-imported-peanut.glitch.me";
-           String serverUrl = "ws://192.168.1.6:8080";
+    String serverUrl = "wss://signallingserver-g4a6.onrender.com";
 
     OkHttpClient client = new OkHttpClient();
     Request request = new Request.Builder().url(serverUrl).build();
@@ -134,6 +133,7 @@ public class PhoneController {
       @Override
       public void onOpen(WebSocket webSocket, @NonNull okhttp3.Response response) {
         ControllerToBotEventBus.emitEvent("{command: \"CONNECTED\"}");
+        registerAsBot(webSocket);
       }
 
       @Override
@@ -164,6 +164,26 @@ public class PhoneController {
     };
 
     webSocket = client.newWebSocket(request, webSocketListener);
+  }
+
+  // Registers this socket as the room's bot, so the signaling server can route each
+  // viewer's WebRTC offer/answer/candidate traffic to the correct per-viewer PeerConnection
+  // instead of broadcasting it to every browser sharing the room.
+  private void registerAsBot(WebSocket webSocket) {
+    if (FirebaseAuth.getInstance().getCurrentUser() == null) {
+      // If this fires, the socket opened before sign-in completed: the server never
+      // learns this connection is the bot, so it can't route PEER_JOINED/signaling to it.
+      Log.w(TAG, "registerAsBot: no signed-in Firebase user yet, skipping bot registration");
+      return;
+    }
+    try {
+      JSONObject registration = new JSONObject();
+      registration.put("roomId", FirebaseAuth.getInstance().getCurrentUser().getEmail());
+      registration.put("role", "bot");
+      webSocket.send(registration.toString());
+    } catch (JSONException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   public void disconnect() {

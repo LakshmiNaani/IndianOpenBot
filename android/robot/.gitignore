@@ -1,3 +1,6 @@
 # Build directory
 /build
 /build/
+# Firebase credentials - keep out of this public fork
+google-services.json
+bkup_google-services.json
