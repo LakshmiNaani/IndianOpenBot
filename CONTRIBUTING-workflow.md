@@ -8,8 +8,8 @@ duplicate clones.
 - Upstream: `https://github.com/ob-f/OpenBot.git`
 - This document is **tracked at the repo root on `master`** (moved there 2026-08-05; it
   previously sat loose in `openbot/` and was not version-controlled at all). Edit it in
-  `openbot/master/`, commit on `master`, and it reaches the other worktrees through the
-  normal fan-out in §6.
+  `openbot/master/`, commit on `master`, and it reaches the other worktrees the next time
+  they merge `master` (§6).
 
 ---
 
@@ -24,13 +24,18 @@ Built 2026-08-02. Migration of existing work completed 2026-08-05.
 | `openbot/integration/` | `android controller` | 30 MB | always on `integration` |
 | `openbot/robot/` | `android` | 15 MB | holds whichever `robot_*` branch you are on |
 | `openbot/web/` | `controller/web-server/client` | 780 KB | holds whichever `ctrl_*` branch you are on |
-| `openbot/server/` | `controller/web-server/server` | 232 KB | always on `server/main` |
+| `openbot/server/` | `controller/web-server/server` | 232 KB | detached at `master` — no server work yet |
 | | | **319 MB** | |
 
-The trunk branches (`integration`, `robot/main`, `web/main`, `server/main`) all sit at
-`87a9d17`, the upstream master tip; `master` is that plus this document. Four feature
-branches carry the migrated work — see §5 for what each one is and §10 for where it
-came from.
+`integration` sits at `87a9d17`, the upstream master tip; `master` is that plus this
+document. Four feature branches carry the migrated work — see §5 for what each one is
+and §10 for where it came from.
+
+The per-component trunks `robot/main`, `web/main` and `server/main` were **deleted
+2026-08-05**. They had accumulated zero commits of their own, every feature branch had
+in fact been cut from the upstream tip rather than from them, and they cost a fan-out
+step on every upstream sync. See §5 for when they would be worth recreating and the
+one command that does it.
 
 There was briefly a separate `main` branch acting as the upstream mirror alongside
 `master`. It was redundant — two names for the same thing — and having a local `main`
@@ -43,18 +48,20 @@ Verified working:
   retains `controller/web-server/package.json` and `vite.config.js` while excluding
   `server/`
 - Merging out-of-cone changes into a sparse worktree (see §3)
-- Fanning `master` out to a component main that is *not* checked out anywhere (§6)
+- Deleting the three per-component trunks with the safe `git branch -d`, which confirmed
+  none carried unmerged work
 - Integrating either component pair cleanly, and the fact that the two pairs conflict
   with each other by design (§7)
 - KDiff3 installed and wired into git as `diff.tool` / `merge.tool`, ignore patterns applied
 
-> **Known gap — the `pre-commit` hook no longer fires.** It matches `robot/*`, `web/*`,
-> `server/*` (with slashes). The feature branches are named `robot_*` and `ctrl_*`, which
-> fall through to the `*) exit 0` catch-all, so **none of them have path-ownership
-> enforcement**. Fix is one line per case — see §4.
+> **Known gap — the `pre-commit` hook no longer fires.** The installed file matches
+> `robot/*`, `web/*`, `server/*` (with slashes), branch names that no longer exist. The
+> feature branches are `robot_*` and `ctrl_*`, which fall through to the `*) exit 0`
+> catch-all, so **none of them have path-ownership enforcement**. §4 carries the
+> corrected hook; it just needs reinstalling.
 
-> **Known gap — the signaling server has no migrated work.** `server/main` is plain
-> upstream. Both `*_cloud_multi_viewer` branches assume a server that understands
+> **Known gap — the signaling server has no migrated work.** `openbot/server/` is a
+> detached worktree at plain upstream. Both `*_cloud_multi_viewer` branches assume a server that understands
 > `role:'bot'`/`role:'viewer'`, routes by `viewerId`, and emits `PEER_JOINED`/`PEER_LEFT`.
 > That code exists only on the deployed Render instance, not in any clone. Pull it down
 > before deleting the old clones (§10).
@@ -84,8 +91,8 @@ Two consequences drive everything below:
 
 ### Do not delete other components in your branches
 
-A deletion is a tracked change. If `robot/main` deletes `controller/`, that deletion
-merges into everything you merge `robot/main` into. Worse, every upstream change to
+A deletion is a tracked change. If a `robot_*` branch deletes `controller/`, that deletion
+merges into everything you merge that branch into. Worse, every upstream change to
 `controller/` becomes a delete/modify conflict you re-resolve forever. And it does not
 achieve the goal anyway: **git has no partial-tree merge** — a merge is whole-tree by
 definition.
@@ -109,9 +116,9 @@ old setup needed four clones.
 ├── .bare/        # the ONE shared object store — never edit files here
 ├── master/       # master       cone: android controller   (upstream mirror)
 ├── integration/  # integration  cone: android controller   (end-to-end testing)
-├── robot/        # robot/main   cone: android
-├── web/          # web/main     cone: controller/web-server/client
-└── server/       # server/main  cone: controller/web-server/server
+├── robot/        # robot_*      cone: android
+├── web/          # ctrl_*       cone: controller/web-server/client
+└── server/       # (detached)   cone: controller/web-server/server
 ```
 
 Open `robot/` in Android Studio and `web/` in VS Code simultaneously — different
@@ -156,15 +163,17 @@ git fetch --all
 #    with Permission denied (publickey). Both were at 87a9d17, so the result is
 #    identical. Once SSH works, confirm with:
 #      git fetch origin && git log --oneline -1 origin/master
-for b in robot/main web/main server/main integration; do git branch -f "$b" master; done
+git branch -f integration master
+# NOTE: this originally also created robot/main, web/main and server/main as
+# per-component trunks. They were deleted 2026-08-05 as unused - see §1 and §5.
 
 # 4. worktrees
 cd ~/StudioProjects/openbot
 git -C .bare worktree add ../master      master
-git -C .bare worktree add ../robot       robot/main
-git -C .bare worktree add ../web         web/main
-git -C .bare worktree add ../server      server/main
 git -C .bare worktree add ../integration integration
+git -C .bare worktree add --detach ../robot  master   # then: git switch -c robot_<date>_<feature>
+git -C .bare worktree add --detach ../web    master   # then: git switch -c ctrl_<date>_<feature>
+git -C .bare worktree add --detach ../server master
 
 # 5. sparse cones
 git -C robot       sparse-checkout set android
@@ -190,9 +199,9 @@ cat > ~/StudioProjects/openbot/.bare/hooks/pre-commit <<'EOF'
 #!/bin/sh
 branch=$(git rev-parse --abbrev-ref HEAD)
 case "$branch" in
-  robot/*)  scope='^android/' ;;
-  web/*)    scope='^controller/web-server/client/' ;;
-  server/*) scope='^controller/web-server/server/' ;;
+  robot_*)  scope='^android/' ;;
+  ctrl_*)   scope='^controller/web-server/client/' ;;
+  server_*) scope='^controller/web-server/server/' ;;
   *)        exit 0 ;;
 esac
 stray=$(git diff --cached --name-only | grep -v "$scope")
@@ -206,22 +215,17 @@ EOF
 chmod +x ~/StudioProjects/openbot/.bare/hooks/pre-commit
 ```
 
-Tested: an `android/` commit on `robot/main` passes; a `README.md` commit on the same
-branch is rejected with the out-of-scope list. `master` and `integration` are deliberately
-unguarded — keeping those clean is a matter of discipline.
+`master` and `integration` are deliberately unguarded — keeping those clean is a matter
+of discipline.
 
-> **This hook is currently inert for all feature branches.** Its cases match `robot/*`,
-> `web/*`, `server/*` — with slashes. The 2026-08-05 naming convention (§5) produces
-> `robot_aug5_…` and `ctrl_aug5_…`, which match none of them and fall through to
-> `*) exit 0`. Fix by widening two cases:
->
-> ```sh
-> robot/*|robot_*) scope='^android/' ;;
-> web/*|ctrl_*)    scope='^controller/web-server/client/' ;;
-> ```
->
-> Re-test both directions afterwards — an `android/` commit on a `robot_*` branch should
-> pass, a root-level commit on the same branch should be rejected.
+> **The block above is the corrected hook; the installed file is still the old one.**
+> `.bare/hooks/pre-commit` on disk matches `robot/*`, `web/*`, `server/*` — with slashes,
+> from the original per-component-trunk naming. Those branches no longer exist and the
+> 2026-08-05 convention produces `robot_aug5_…` / `ctrl_aug5_…`, which match nothing and
+> fall through to `*) exit 0`. **All four feature branches therefore have no
+> path-ownership enforcement.** Re-run the `cat > … <<'EOF'` block above to install the
+> fixed version, then test both directions: an `android/` commit on a `robot_*` branch
+> should pass, a root-level commit on the same branch should be rejected.
 
 ### IDEs
 
@@ -242,9 +246,6 @@ shared across worktrees automatically.
 |---|---|---|
 | `master` | Mirror of `upstream/master`, plus this document | **This document only** |
 | `integration` | Disposable test bed for running all three components together | Never |
-| `robot/main` | Component trunk for `android/`. PR target for `robot_*` | Only via PR |
-| `web/main` | Component trunk for `controller/web-server/client/`. PR target for `ctrl_*` | Only via PR |
-| `server/main` | Component trunk for `controller/web-server/server/` | Only via PR |
 | `robot_<date>_<feature>` | Robot app work | Yes |
 | `ctrl_<date>_<feature>` | Web controller work | Yes |
 
@@ -308,18 +309,21 @@ paths are disjoint. That is the trap, not the reassurance. See §7.
 
 ```bash
 cd ~/StudioProjects/openbot/robot
-git switch -c robot_aug6_reconnect robot/main
+git switch -c robot_aug6_reconnect master
 # ...edit android/ only...
 git commit -am "robot: reconnect on ICE failure"
 git push -u origin robot_aug6_reconnect
 ```
 
-Branch off the **component main**, not `master`, and PR back to the component main. That
-keeps each review scoped to one component's directory.
+Branch off `master`. The worktree's cone keeps you scoped to one component (see below),
+and the `pre-commit` hook enforces it once reinstalled (§4).
 
-Note that the component mains carry no commits of their own today, so
-`git switch -c <new> master` gives an identical starting tree. The reason to branch off
-`robot/main` is for when it *does* carry shared per-component work — see below.
+**These branches are long-lived configuration variants, not features awaiting merge.**
+`robot_aug5_simple_local_changes` is never "done" — it is the LAN configuration, and it
+stays alive as long as you want to drive over LAN. Nothing merges back to `master`;
+`master` stays a clean upstream mirror so `git merge upstream/master` remains trivial.
+A genuine feature intended for ob-f/OpenBot is a different workflow: short-lived branch
+off `master`, PR to ob-f, delete.
 
 ### Getting a clean base for a new branch
 
@@ -349,17 +353,18 @@ git -C robot2 sparse-checkout set android
 # then re-apply the Line.png skip-worktree fix from §11
 ```
 
-**When the component mains earn their keep:** only once `robot/main` carries work that is
-ahead of `master` and shared by more than one robot branch — a fix both the LAN and cloud
-variants need, say. Then branching from `robot/main` gives you that shared baseline and
-branching from `master` does not. Until such work exists they are aliases for `master`,
-and they cost you the fan-out step in §6. They are also trivial to recreate:
-`git branch robot/main master`.
+**If you ever want a per-component trunk back**, that is one command —
+`git branch robot/main master` — and the reason to do it is concrete: when work exists
+that is ahead of `master` and shared by more than one robot branch, such as a fix both
+the LAN and cloud variants need. Branching from `robot/main` then gives you that shared
+baseline; branching from `master` does not. Until such work exists a component trunk is
+an alias for `master` that costs you an extra sync step, which is why the three were
+deleted on 2026-08-05.
 
 ### The hook
 
-Note that the `pre-commit` path-ownership hook does **not** currently match these branch
-names (§1, §4) — until that is fixed, staying inside `android/` is on you, not the hook.
+The `pre-commit` path-ownership hook does **not** currently match these branch names
+(§1, §4) — until it is reinstalled, staying inside `android/` is on you, not the hook.
 
 ### Opening the PR — check the base repository
 
@@ -372,20 +377,26 @@ on the compare page from `ob-f/OpenBot` to `LakshmiNaani/IndianOpenBot`, or skip
 direct URL that pins both ends to your fork:
 
 ```
-https://github.com/LakshmiNaani/IndianOpenBot/compare/robot/main...<your-branch>?expand=1
-https://github.com/LakshmiNaani/IndianOpenBot/compare/web/main...<your-branch>?expand=1
+https://github.com/LakshmiNaani/IndianOpenBot/compare/master...<your-branch>?expand=1
 ```
 
-The tell that you are pointed at the wrong base: `robot/main`, `web/main` and `server/main`
-do not exist in `ob-f/OpenBot`, so the base branch dropdown will not offer them. Ignore the
-"Compare & pull request" banner that appears after a push — it goes straight to the
-upstream-based form.
+Ignore the "Compare & pull request" banner that appears after a push — it goes straight
+to the upstream-based form.
+
+Since the variant branches never merge back (see *Daily workflow* above), PRs inside your
+own fork are optional — useful as a self-review diff, not a gate. The case where the base
+repository genuinely matters is a real contribution to ob-f/OpenBot, and there you *do*
+want the default.
 
 ---
 
 ## 6. Syncing with upstream
 
-Three steps, in order. Do step 1 **once**, in `main/`. Never sync in several places.
+Two steps. Do step 1 **once**, in `master/`. Never sync in several places.
+
+Deleting the component trunks on 2026-08-05 removed what used to be step 2 — fanning
+`master` out to `robot/main`, `web/main` and `server/main` before it could reach anything.
+Upstream now goes straight from `master` into each variant branch.
 
 ### Step 1 — bring upstream into `master`
 
@@ -417,53 +428,40 @@ that owns it.
 
 `git push origin master` needs a loaded key — `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`.
 
-### Step 2 — fan out to the component mains
-
-The original version of this section assumed each component worktree was sitting on its
-own component main. That is no longer true: `robot/` and `web/` hold feature branches
-most of the time. Which command you need depends on whether the target branch is
-currently checked out somewhere.
-
-```bash
-# Component main NOT checked out in any worktree -> fast-forward the ref directly.
-# No worktree is touched, no branch switching required.
-git -C master fetch . master:robot/main master:web/main
-
-# Component main IS checked out in its worktree -> go there and merge.
-cd ~/StudioProjects/openbot/server && git merge master
-```
-
-`git fetch . <src>:<dst>` refuses anything that is not a fast-forward, so it cannot
-silently clobber work. It also errors out if `<dst>` happens to be checked out somewhere
-— which is exactly the signal to use the second form instead.
-
-**Prefer the first form wherever it applies.** Switching branches inside `robot/` has a
-real cost: `android/robot/google-services.json` is *tracked* on `master` but *gitignored*
-on the feature branches, so checking out a `master`-based branch overwrites your local
-Firebase credentials with upstream's `opencode-openbot` copy. This happened on
-2026-08-05; the file was recovered from the old clones. Avoid the switch and you avoid
-the problem.
-
-### Step 3 — bring the component main into your feature branch
+### Step 2 — bring `master` into each variant branch
 
 ```bash
 cd ~/StudioProjects/openbot/robot
 git switch robot_aug5_simple_local_changes
-git merge robot/main
+git merge master
+
+cd ~/StudioProjects/openbot/web
+git switch ctrl_aug5_simple_local_changes
+git merge master
 ```
+
+Repeat for the other pair. Each branch has exactly one conflict surface — its own
+component directory — so these merges stay small.
 
 Rebase or merge depends on one thing only — whether the branch has been pushed:
 
 | Branch state | Do | Why |
 |---|---|---|
-| Not yet pushed | `git rebase robot/main` | Linear history, costs nothing |
-| Already pushed | `git merge robot/main` | Rebasing rewrites published commits |
+| Not yet pushed | `git rebase master` | Linear history, costs nothing |
+| Already pushed | `git merge master` | Rebasing rewrites published commits |
 
+Currently pushed: `robot_aug5_simple_local_changes`, `ctrl_aug5_simple_local_changes`.
 If you do want a rebase on a pushed branch, that is fine on a solo fork — just make it
 deliberate: `git push --force-with-lease`, never bare `--force`.
 
-Cadence: **monthly**, or when you need a specific upstream fix. Each component branch has
-exactly one conflict surface — its own directory — so these merges stay small.
+> **Watch `google-services.json` when switching branches in `robot/`.** It is *tracked*
+> on `master` and *gitignored* on the variant branches, so checking out `master` there
+> overwrites your local Firebase credentials with upstream's `opencode-openbot` copy —
+> silently, because git overwrites ignored untracked files freely. Happened on
+> 2026-08-05; recovered from the old clones. Stay on the variant branch and merge
+> `master` into it rather than checking `master` out in that worktree.
+
+Cadence: **monthly**, or when you need a specific upstream fix.
 
 ---
 
@@ -538,8 +536,8 @@ git reset --hard master
 git merge --no-edit robot_aug5_cloud_multi_viewer ctrl_aug5_cloud_multi_viewer
 ```
 
-Include `server/main` in the merge once the signaling server actually has work on it
-(§1, known gap). Today it is plain upstream, so merging it changes nothing.
+Add a `server_*` branch to the merge once the signaling server actually has work on it
+(§1, known gap). Today there is none, so there is nothing to merge.
 
 The `android controller` cone covers everything needed to run all three. Then:
 
@@ -560,7 +558,7 @@ Installed at `/Applications/kdiff3.app`, CLI at `/opt/homebrew/bin/kdiff3`.
 
 ```bash
 # folder-compare two branches without checking either out
-git difftool -d main robot/main
+git difftool -d master robot_aug5_simple_local_changes
 
 # review a whole branch before opening the PR
 git difftool -d main robot/feat-cloud-multi
@@ -698,12 +696,11 @@ now live in `.bare/`). Confirm the branches build and run from the worktrees fir
 - **`git checkout master` from an arbitrary folder does not work.** Each worktree owns
   one branch, and git refuses to check out a branch already checked out elsewhere. `cd`
   to the folder that holds it instead of switching to it.
-- **Switching branches in `robot/` overwrites `google-services.json`.** It is tracked on
-  `master` and gitignored on the feature branches, so checking out a `master`-based branch
-  replaces your local Firebase credentials with upstream's `opencode-openbot` copy, with
-  no warning — git overwrites ignored untracked files freely. Prefer the
-  `git fetch . master:robot/main` form in §6 so you never have to switch. If it does
-  happen, the file is recoverable from the old clones.
+- **Checking out `master` in `robot/` overwrites `google-services.json`.** It is tracked
+  on `master` and gitignored on the variant branches, so the checkout replaces your local
+  Firebase credentials with upstream's `opencode-openbot` copy, with no warning — git
+  overwrites ignored untracked files freely. Stay on the variant branch and merge
+  `master` into it (§6). If it does happen, the file is recoverable from the old clones.
 - **`git worktree move` resolves relative paths against `-C`, not your shell.**
   `git -C .bare worktree move main master` puts the worktree *inside* `.bare/`. Use
   absolute paths for both arguments. (Hit on 2026-08-05 during the `main` collapse;
