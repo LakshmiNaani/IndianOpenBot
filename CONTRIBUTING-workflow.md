@@ -355,7 +355,7 @@ git push -u origin robot_aug6_reconnect
 ```
 
 Branch off `master`. The worktree's cone keeps you scoped to one component (see below),
-and the `pre-commit` hook enforces it once reinstalled (§4).
+and the `pre-commit` hook enforces it (§4).
 
 **These branches are long-lived configuration variants, not features awaiting merge.**
 `robot_aug5_simple_local_changes` is never "done" — it is the LAN configuration, and it
@@ -402,8 +402,11 @@ deleted on 2026-08-05.
 
 ### The hook
 
-The `pre-commit` path-ownership hook does **not** currently match these branch names
-(§1, §4) — until it is reinstalled, staying inside `android/` is on you, not the hook.
+The `pre-commit` path-ownership hook matches these branch names and will reject a commit
+that strays outside the branch's component directory (§4). It is a seatbelt for one
+specific, silent mistake — the worktree cone hides other components, but root-level files
+are still materialized and commit perfectly happily. It is not enforcement:
+`--no-verify` bypasses it, and it exists only on this machine.
 
 ### Opening the PR — check the base repository
 
@@ -732,6 +735,9 @@ now live in `.bare/`). Confirm the branches build and run from the worktrees fir
 ## 11. Gotchas
 
 - **Same branch, two worktrees** — refused by git. Use `git worktree add --detach`.
+- **Hooks are never pushed.** `.bare/hooks/` is repository metadata, not content, so no
+  clone, fetch, pull or push carries it (§4). The path-ownership guard protects this
+  machine only; re-cloning the fork anywhere else means reinstalling it by hand.
 - **`git checkout master` from an arbitrary folder does not work.** Each worktree owns
   one branch, and git refuses to check out a branch already checked out elsewhere. `cd`
   to the folder that holds it instead of switching to it.
