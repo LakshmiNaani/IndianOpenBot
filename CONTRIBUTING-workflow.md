@@ -54,11 +54,6 @@ Verified working:
   with each other by design (§7)
 - KDiff3 installed and wired into git as `diff.tool` / `merge.tool`, ignore patterns applied
 
-> **Known gap — the `pre-commit` hook no longer fires.** The installed file matches
-> `robot/*`, `web/*`, `server/*` (with slashes), branch names that no longer exist. The
-> feature branches are `robot_*` and `ctrl_*`, which fall through to the `*) exit 0`
-> catch-all, so **none of them have path-ownership enforcement**. §4 carries the
-> corrected hook; it just needs reinstalling.
 
 > **Known gap — the signaling server has no migrated work.** `openbot/server/` is a
 > detached worktree at plain upstream. Both `*_cloud_multi_viewer` branches assume a server that understands
@@ -197,18 +192,37 @@ Worktrees share `.bare/hooks/`, so this installs once for all of them:
 ```bash
 cat > ~/StudioProjects/openbot/.bare/hooks/pre-commit <<'EOF'
 #!/bin/sh
+# Path-ownership guard. Keeps a variant branch inside its own component directory,
+# which is what lets the branches merge into integration without conflicting.
+# Shared by every worktree via .bare/hooks/.
+
 branch=$(git rev-parse --abbrev-ref HEAD)
+
 case "$branch" in
   robot_*)  scope='^android/' ;;
   ctrl_*)   scope='^controller/web-server/client/' ;;
   server_*) scope='^controller/web-server/server/' ;;
-  *)        exit 0 ;;
+  *)        exit 0 ;;   # master, integration, detached HEAD: unguarded by design
 esac
+
+# A merge legitimately brings in files from outside this branch's scope - that is the
+# whole point of merging master in. Only conflicted merges reach pre-commit (clean ones
+# go through pre-merge-commit), so without this a conflict-resolved `git merge master`
+# would be rejected for doing exactly what it is supposed to do.
+if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
+  exit 0
+fi
+
 stray=$(git diff --cached --name-only | grep -v "$scope")
+
 if [ -n "$stray" ]; then
   echo "Branch '$branch' may only touch $scope"
   echo "Out of scope:"; echo "$stray" | sed 's/^/  /'
-  echo "Commit to 'integration' instead if this change is genuinely cross-component."
+  echo
+  echo "Options:"
+  echo "  - move the change to the branch that owns that directory"
+  echo "  - if it is genuinely cross-component, commit it on 'integration'"
+  echo "  - if you are certain, bypass with: git commit --no-verify"
   exit 1
 fi
 EOF
@@ -218,14 +232,39 @@ chmod +x ~/StudioProjects/openbot/.bare/hooks/pre-commit
 `master` and `integration` are deliberately unguarded — keeping those clean is a matter
 of discipline.
 
-> **The block above is the corrected hook; the installed file is still the old one.**
-> `.bare/hooks/pre-commit` on disk matches `robot/*`, `web/*`, `server/*` — with slashes,
-> from the original per-component-trunk naming. Those branches no longer exist and the
-> 2026-08-05 convention produces `robot_aug5_…` / `ctrl_aug5_…`, which match nothing and
-> fall through to `*) exit 0`. **All four feature branches therefore have no
-> path-ownership enforcement.** Re-run the `cat > … <<'EOF'` block above to install the
-> fixed version, then test both directions: an `android/` commit on a `robot_*` branch
-> should pass, a root-level commit on the same branch should be rejected.
+Installed and tested 2026-08-06, in a throwaway worktree, in four directions:
+
+| Case | Expected | Result |
+|---|---|---|
+| `android/` commit on a `robot_*` branch | pass | committed |
+| root-level `.gitignore` commit on the same branch | reject | rejected, stray file named |
+| same commit with `--no-verify` | pass | bypass works |
+| out-of-scope file staged mid-merge | pass | exempt via `MERGE_HEAD` |
+
+It had been silently inert between 2026-08-05 and 2026-08-06: the original cases matched
+`robot/*`, `web/*`, `server/*`, branch names deleted when the component trunks went, so
+every commit fell through to `*) exit 0` and was approved.
+
+### Hooks are local — they are never pushed
+
+`.bare/hooks/` is repository *metadata*, not repository *content*. Git does not version
+it and no clone, fetch, pull or push carries it. This is deliberate: if `git clone`
+installed executable hooks from a remote, cloning any repository would be remote code
+execution.
+
+Consequences here:
+
+- The guard protects **this machine only**. A fresh clone of the fork has no hook.
+- Worktrees do share it — one file in `.bare/hooks/` covers all five folders. Re-cloning
+  elsewhere means reinstalling from the block above.
+- It stops accidents, not intent: `--no-verify` bypasses it, by design.
+
+If this ever needs to apply to someone other than you, the options in ascending order of
+actual enforcement are: commit a `.githooks/` directory and have each clone run
+`git config core.hooksPath .githooks` once; adopt a hook manager (husky would fit, the
+controller is already Node); or reimplement the check as a GitHub Action on
+`pull_request` with branch protection requiring it — the only version a contributor
+cannot skip.
 
 ### IDEs
 
