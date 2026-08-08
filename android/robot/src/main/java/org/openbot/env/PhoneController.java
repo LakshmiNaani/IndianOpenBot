@@ -124,7 +124,7 @@ public class PhoneController {
   }
 
   private void nodeServerConnect() {
-    String serverUrl = "ws://" + ControllerConfig.getInstance().getWebControllerServerIp() + ":8080";
+    String serverUrl = "wss://signallingserver-g4a6.onrender.com";
 
     OkHttpClient client = new OkHttpClient();
     Request request = new Request.Builder().url(serverUrl).build();
