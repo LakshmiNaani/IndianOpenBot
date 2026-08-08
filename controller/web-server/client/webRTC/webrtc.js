@@ -63,7 +63,27 @@ export function WebRTC (connection) {
 
         peerConnection = new RTCPeerConnection()
         peerConnection.onconnectionstatechange = () => {
+            console.log('WebRTC connectionState:', peerConnection?.connectionState)
             if (peerConnection?.connectionState === 'connected') {
+            }
+        }
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log('WebRTC iceConnectionState:', peerConnection?.iceConnectionState)
+        }
+        peerConnection.onicegatheringstatechange = () => {
+            console.log('WebRTC iceGatheringState:', peerConnection?.iceGatheringState)
+        }
+
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                connection.send(JSON.stringify({
+                    webrtc_event: {
+                        type: 'candidate',
+                        label: event.candidate.sdpMLineIndex,
+                        id: event.candidate.sdpMid,
+                        candidate: event.candidate.candidate
+                    }
+                }))
             }
         }
 
@@ -95,6 +115,7 @@ export function WebRTC (connection) {
         video.srcObject.getTracks().forEach((track) => peerConnection.addTrack(track))
 
         peerConnection.ontrack = (event) => {
+            console.log('WebRTC ontrack: received remote track', event.track.kind)
             video.srcObject = event.streams[0]
         }
     }
