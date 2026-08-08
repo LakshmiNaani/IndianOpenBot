@@ -285,12 +285,12 @@ public class WebRtcServer implements IVideoServer {
         new PeerConnection.Observer() {
           @Override
           public void onSignalingChange(PeerConnection.SignalingState signalingState) {
-            Log.d(TAG, "onSignalingChange: ");
+            Log.d(TAG, "onSignalingChange: " + signalingState);
           }
 
           @Override
           public void onIceConnectionChange(PeerConnection.IceConnectionState iceConnectionState) {
-            Log.d(TAG, "onIceConnectionChange: ");
+            Log.d(TAG, "onIceConnectionChange: " + iceConnectionState);
           }
 
           @Override
@@ -298,16 +298,18 @@ public class WebRtcServer implements IVideoServer {
               PeerConnection.IceConnectionState newState) {}
 
           @Override
-          public void onConnectionChange(PeerConnection.PeerConnectionState newState) {}
+          public void onConnectionChange(PeerConnection.PeerConnectionState newState) {
+            Log.d(TAG, "onConnectionChange: " + newState);
+          }
 
           @Override
           public void onIceConnectionReceivingChange(boolean b) {
-            Log.d(TAG, "onIceConnectionReceivingChange: ");
+            Log.d(TAG, "onIceConnectionReceivingChange: " + b);
           }
 
           @Override
           public void onIceGatheringChange(PeerConnection.IceGatheringState iceGatheringState) {
-            Log.d(TAG, "onIceGatheringChange: ");
+            Log.d(TAG, "onIceGatheringChange: " + iceGatheringState);
           }
 
           @Override
