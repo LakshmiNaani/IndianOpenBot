@@ -11,9 +11,9 @@ import {WebRTC} from '../webRTC/webrtc.js'
 import {ErrorDisplay} from '../utils/error-display.js'
 import {Buttons} from './buttons.js'
 
-export function BotMessageHandler (connection) {
-    const webRtc = new WebRTC(connection)
-    const buttons = new Buttons(connection)
+export function BotMessageHandler (connection, viewerId) {
+    const webRtc = new WebRTC(connection, viewerId)
+    const buttons = new Buttons(connection, () => webRtc.markCameraSwitchStart())
     const errDisplay = new ErrorDisplay()
 
     webRtc.onDataMessageReceived((message) => {
@@ -49,7 +49,7 @@ export function BotMessageHandler (connection) {
                 break
 
             case 'WEB_RTC_EVENT':
-                webRtc.handle(msg.WEB_RTC_EVENT, connection)
+                webRtc.handle(msg.WEB_RTC_EVENT, msg.viewerId)
                 break
             case 'driveCmd' :
                 connection.send(JSON.stringify(msg))

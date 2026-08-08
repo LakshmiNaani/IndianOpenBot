@@ -7,7 +7,7 @@
  * Date: Mon Nov 29 2021
  */
 
-export function Buttons (connection) {
+export function Buttons (connection, onCameraSwitchRequested) {
   const toggleMirror = () => {
     const video = document.getElementById('video')
 
@@ -41,6 +41,7 @@ export function Buttons (connection) {
 
     // camera switch
     const switchCamera = () => {
+      if (onCameraSwitchRequested) onCameraSwitchRequested()
       connection.send(JSON.stringify({ command: 'SWITCH_CAMERA' }));
     }
 

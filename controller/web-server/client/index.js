@@ -17,14 +17,20 @@ import {signInWithCustomToken} from 'firebase/auth'
 import {auth, googleSigIn, googleSignOut} from './firebase/authentication'
 import {localStorageKeys} from './utils/constants'
 
+// Identifies this browser tab/machine to the signaling server so it can route this viewer's
+// WebRTC offer/answer/candidate traffic separately from any other viewer sharing the same room.
+const viewerId = crypto.randomUUID()
+
 const connection = new Connection();
 (async () => {
     const keyboard = new Keyboard()
-    const botMessageHandler = new BotMessageHandler(connection)
+    const botMessageHandler = new BotMessageHandler(connection, viewerId)
 
     const onData = data => {
         const msg = JSON.parse(data)
-        botMessageHandler.handle(JSON.parse(data).status, connection)
+        // msg.viewerId identifies which viewer the bot's message is for; it travels
+        // alongside msg.status rather than inside it, so it's carried over here.
+        botMessageHandler.handle({...msg.status, viewerId: msg.viewerId}, connection)
     }
 
     const onQuit = () => {
@@ -32,7 +38,7 @@ const connection = new Connection();
     }
 
     await connection.start(onData)
-    const webRtc = new WebRTC(connection)
+    const webRtc = new WebRTC(connection, viewerId)
     const sendToBot = (key) => {
         const msg = JSON.parse(key)
         let commands = {}
@@ -109,7 +115,9 @@ function handleSignInButtonClick() {
  */
 function sendId() {
     const response = {
-        roomId: signedInUser.email
+        roomId: signedInUser.email,
+        viewerId,
+        role: 'viewer'
     }
     connection.send(JSON.stringify(response))
 }
