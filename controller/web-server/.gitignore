@@ -1,2 +1,16 @@
 node_modules
 node_modules/.package-lock.json
+.env
+.env.*
+!.env.example
+build
+
+# Firebase CLI's local deploy/hosting cache, regenerated on every deploy.
+.firebase
+
+# Cloudflare Workers (turn-worker/) - real secrets only ever live in Cloudflare's
+# secret store via `wrangler secret put`, never in a file. These are just the
+# local-dev equivalents, ignored so one never gets committed by accident.
+.wrangler
+.dev.vars
+.dev.vars.*

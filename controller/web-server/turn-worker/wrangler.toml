@@ -1,0 +1,13 @@
+name = "openbot-turn"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# Browser origins allowed to mint credentials, comma separated. Applies only to
+# requests that carry an Origin header, so the Android robot is unaffected.
+# Comment out entirely to allow any origin.
+ALLOWED_ORIGIN = "https://openbot-local-mac.web.app,http://localhost:8081"
+
+# TURN_KEY_ID and TURN_KEY_API_TOKEN are secrets, not vars:
+#   wrangler secret put TURN_KEY_ID
+#   wrangler secret put TURN_KEY_API_TOKEN
