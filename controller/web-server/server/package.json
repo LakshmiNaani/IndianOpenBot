@@ -6,6 +6,7 @@
   "scripts": {
     "start": "nodemon server.js 8000 --watch",
     "start-headless": "node server.js",
+    "test": "node test/signaling-test.js",
     "lint": "npx eslint server.js/*.js --fix"
   },
   "author": "Nitish Pratap",
