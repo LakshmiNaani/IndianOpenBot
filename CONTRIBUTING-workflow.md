@@ -24,7 +24,7 @@ Built 2026-08-02. Migration of existing work completed 2026-08-05.
 | `openbot/integration/` | `android controller` | 30 MB | always on `integration` |
 | `openbot/robot/` | `android` | 15 MB | holds whichever `robot_*` branch you are on |
 | `openbot/web/` | `controller/web-server/client` | 780 KB | holds whichever `ctrl_*` branch you are on |
-| `openbot/server/` | `controller/web-server/server` | 232 KB | detached at `master` — no server work yet |
+| `openbot/server/` | `controller/web-server/server` | 232 KB | `server_aug6_firsttest` — signaling server work landed 2026-08-17 |
 | | | **319 MB** | |
 
 `integration` sits at `87a9d17`, the upstream master tip; `master` is that plus this
@@ -55,11 +55,14 @@ Verified working:
 - KDiff3 installed and wired into git as `diff.tool` / `merge.tool`, ignore patterns applied
 
 
-> **Known gap — the signaling server has no migrated work.** `openbot/server/` is a
-> detached worktree at plain upstream. Both `*_cloud_multi_viewer` branches assume a server that understands
-> `role:'bot'`/`role:'viewer'`, routes by `viewerId`, and emits `PEER_JOINED`/`PEER_LEFT`.
-> That code exists only on the deployed Render instance, not in any clone. Pull it down
-> before deleting the old clones (§10).
+> **Update 2026-08-17 — `openbot/server/` now has real work**, on a new branch
+> `server_aug6_firsttest`: room-scoped (`roomId`) message routing replacing a global
+> broadcast, a `leave` message so signing out actually leaves the room, and `PORT` read
+> from the environment (for Render). **This is a different signaling protocol from what
+> the `*_cloud_multi_viewer` pair still needs**, though — that pair expects
+> `role:'bot'`/`role:'viewer'`, routing by `viewerId`, and `PEER_JOINED`/`PEER_LEFT`
+> events. That specific gap is still open: that code exists only on the deployed Render
+> instance, not in any clone. Pull it down before deleting the old clones (§10).
 
 ---
 
@@ -83,6 +86,26 @@ Two consequences drive everything below:
    The isolation is free — it comes from the layout, not from deleting files.
 2. Git can never detect protocol drift. Merges stay clean even when the robot and the
    controller have stopped being able to talk. That is what integration exists for (§7).
+
+### A fourth piece that doesn't fit the model: `turn-worker/`
+
+Added 2026-08-17. `controller/web-server/turn-worker/` is a Cloudflare Worker that mints
+short-lived TURN credentials for WebRTC connections that cross NAT — used by **both** the
+robot and the web controller, not owned by either. It genuinely is cross-component, unlike
+the Firebase hosting config below, so unlike everything else in this section it does not
+live on a `ctrl_*`/`robot_*`/`server_*` branch — it lives only on `integration`, committed
+directly there (see §5 for why `integration` is otherwise disposable and never commit-to).
+
+Its real secrets (`TURN_KEY_ID`, `TURN_KEY_API_TOKEN`) are never in a file — they exist
+only in Cloudflare's own secret store, set via `wrangler secret put`. `wrangler deploy`
+and `firebase deploy` both read straight from local disk, not from git, so which branch
+this code sits on has zero effect on what's actually deployed; committing it on
+`integration` is purely so the source isn't only sitting untracked on one machine.
+
+If you want it visible in a `ctrl_*` or `robot_*` worktree too, `git merge integration`
+brings it in — but nothing requires that merge, since neither the robot app nor the web
+controller consume this as source, only as a deployed URL
+(`VITE_PUBLIC_ICE_SERVERS_URL`).
 
 ### Do not delete other components in your branches
 
@@ -200,7 +223,7 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 
 case "$branch" in
   robot_*)  scope='^android/' ;;
-  ctrl_*)   scope='^controller/web-server/client/' ;;
+  ctrl_*)   scope='^controller/web-server/(client/|[^/]+$)' ;;
   server_*) scope='^controller/web-server/server/' ;;
   *)        exit 0 ;;   # master, integration, detached HEAD: unguarded by design
 esac
@@ -213,7 +236,7 @@ if [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ]; then
   exit 0
 fi
 
-stray=$(git diff --cached --name-only | grep -v "$scope")
+stray=$(git diff --cached --name-only | grep -vE "$scope")
 
 if [ -n "$stray" ]; then
   echo "Branch '$branch' may only touch $scope"
@@ -244,6 +267,17 @@ Installed and tested 2026-08-06, in a throwaway worktree, in four directions:
 It had been silently inert between 2026-08-05 and 2026-08-06: the original cases matched
 `robot/*`, `web/*`, `server/*`, branch names deleted when the component trunks went, so
 every commit fell through to `*) exit 0` and was approved.
+
+**Widened 2026-08-17.** The original `ctrl_*` scope, `^controller/web-server/client/`,
+turned out to be too narrow: real web-controller work also touches files that sit
+directly at `controller/web-server/` — `.env.example`, `.firebaserc`, `firebase.json`,
+`package-lock.json`, `.gitignore` — which are neither `client/` nor `server/`. These
+aren't cross-component (they don't touch `android/`), they were just missed by a scope
+regex built around a two-way split. First patched by listing each filename explicitly,
+then generalized to `^controller/web-server/(client/|[^/]+$)` — the `client/` subtree
+plus any file with no further path segment under `controller/web-server/` — so a future
+root-level file doesn't trip the same gap again. Needed `grep -v` → `grep -vE` for the
+`|` alternation to work.
 
 ### Hooks are local — they are never pushed
 
@@ -287,10 +321,14 @@ shared across worktrees automatically.
 | `integration` | Disposable test bed for running all three components together | Never |
 | `robot_<date>_<feature>` | Robot app work | Yes |
 | `ctrl_<date>_<feature>` | Web controller work | Yes |
+| `server_<date>_<feature>` | Signaling server work | Yes |
 
 Naming convention, established 2026-08-05: robot branches carry `robot`, controller
-branches carry `ctrl`, both followed by a short date and the feature —
-`robot_aug5_cloud_multi_viewer`, `ctrl_aug5_simple_local_changes`.
+branches carry `ctrl`, signaling-server branches carry `server`, all followed by a short
+date and the feature — `robot_aug5_cloud_multi_viewer`, `ctrl_aug5_simple_local_changes`,
+`server_aug6_firsttest` (first `server_*` branch, created 2026-08-17 off the same base
+commit as its `ctrl_aug6_firsttest`/`robot_aug6_firsttest` siblings, `87a9d17` — not off
+`master` tip, to match them).
 
 ### Why there is exactly one mirror branch, and why it is called `master`
 
@@ -579,7 +617,8 @@ git merge --no-edit robot_aug5_cloud_multi_viewer ctrl_aug5_cloud_multi_viewer
 ```
 
 Add a `server_*` branch to the merge once the signaling server actually has work on it
-(§1, known gap). Today there is none, so there is nothing to merge.
+(§1, known gap — filled 2026-08-17 by `server_aug6_firsttest`, but only for the
+`aug6_firsttest` line; the `*_cloud_multi_viewer` pair's server-side gap is still open).
 
 The `android controller` cone covers everything needed to run all three. Then:
 
@@ -770,3 +809,8 @@ now live in `.bare/`). Confirm the branches build and run from the worktrees fir
   `ssh-add --apple-use-keychain ~/.ssh/id_ed25519`.
 - **Root `.gitignore` is present** in every sparse worktree (cone mode keeps root-level
   files), so ignore rules apply normally.
+- **`controller/web-server/.gitignore` gained three entries 2026-08-17**: `.firebase`
+  (Firebase CLI's local hosting cache, regenerated every `firebase deploy`) and
+  `.wrangler` / `.dev.vars` / `.dev.vars.*` (Wrangler's local-dev equivalents of `.env`,
+  for `turn-worker/` — the real secrets never touch a file at all, see the `turn-worker/`
+  callout in §2).
