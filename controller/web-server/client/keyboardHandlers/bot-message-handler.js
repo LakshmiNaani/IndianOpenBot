@@ -20,6 +20,12 @@ export function BotMessageHandler (connection) {
         // Do something on data received;
     })
 
+    // Owns the only WebRTC instance, so anything that needs to tear the video
+    // down (Escape, sign out) has to go through here.
+    this.stopVideo = () => {
+        webRtc.stop()
+    }
+
     this.handle = (msg, connection) => {
         if (msg === undefined || msg === null) {
             return
@@ -38,7 +44,10 @@ export function BotMessageHandler (connection) {
             case 'VIDEO_COMMAND':
                 switch (msg.VIDEO_COMMAND) {
                     case 'START':
-                        webRtc.start()
+                        webRtc.start().catch((error) => {
+                            errDisplay.set('Could not start the video connection. See the console for details.')
+                            console.error('WebRTC: start failed:', error)
+                        })
                         buttons.setMirrored(false)
                         break
 
