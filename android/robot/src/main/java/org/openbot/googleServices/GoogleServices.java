@@ -98,8 +98,7 @@ public class GoogleServices extends Fragment {
         GoogleSignInOptions gso =
                 new GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
                         .requestEmail()
-                        .requestIdToken(
-                                "955078484078-kbadvp54dljcpk0g0j5bnf5c17q63ir2.apps.googleusercontent.com")
+                        .requestIdToken(mContext.getString(org.openbot.R.string.default_web_client_id))
                         .requestProfile()
                         .build();
         // Set up Shared Preferences

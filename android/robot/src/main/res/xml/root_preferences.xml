@@ -84,4 +84,15 @@
 
     </PreferenceCategory>
 
+    <PreferenceCategory app:title="Web Controller">
+
+        <EditTextPreference
+            app:defaultValue="192.168.1.9"
+            app:key="web_controller_server_ip"
+            app:summary="IP address of the machine running the web controller signaling server (port 8080)"
+            app:title="Web Controller Server IP"
+            app:useSimpleSummaryProvider="true" />
+
+    </PreferenceCategory>
+
 </PreferenceScreen>
