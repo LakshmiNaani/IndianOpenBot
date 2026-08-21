@@ -20,6 +20,28 @@ export function BotMessageHandler (connection) {
         // Do something on data received;
     })
 
+    // Webcam and mic default to on as soon as media is attached (see
+    // attachLocalMedia in webrtc.js) and are independently toggleable. Wired
+    // once since these buttons outlive individual calls. webRtc also reports
+    // back through onWebcamStateChange/onMicStateChange when a track is
+    // stopped from outside the app (e.g. the browser's camera/mic indicator),
+    // so the icons stay accurate and clicking the button again restarts it.
+    const webcamButton = document.getElementById('webcam_button')
+    webcamButton.onclick = () => {
+        webRtc.setWebcamEnabled(webcamButton.src.includes('videocam_off'))
+    }
+    webRtc.onWebcamStateChange((on) => {
+        webcamButton.src = on ? 'icons/videocam_black_24dp.svg' : 'icons/videocam_off_black_24dp.svg'
+    })
+
+    const micButton = document.getElementById('mic_button')
+    micButton.onclick = () => {
+        webRtc.setMicEnabled(micButton.src.includes('mic_off'))
+    }
+    webRtc.onMicStateChange((on) => {
+        micButton.src = on ? 'icons/mic_black_24dp.svg' : 'icons/mic_off_black_24dp.svg'
+    })
+
     // Owns the only WebRTC instance, so anything that needs to tear the video
     // down (Escape, sign out) has to go through here.
     this.stopVideo = () => {

@@ -5,7 +5,8 @@ export const localStorageKeys = {
     user: 'user',
     serverId: 'serverId',
     serverEndTime: 'serverEndTime',
-    serverStartTime: 'serverStartTime'
+    serverStartTime: 'serverStartTime',
+    selfVideoPipSize: 'selfVideoPipSize'
 }
 
 export const tables = {

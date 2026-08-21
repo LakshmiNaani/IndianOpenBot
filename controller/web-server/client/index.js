@@ -224,6 +224,34 @@ export const deleteCookie = (name) => {
 
 handleServerDetailsOnSSO()
 handleAuthChangedOnRefresh()
+setupSelfVideoPipResize()
+
+/**
+ * Restores the operator's webcam PIP box to whatever size it was last dragged
+ * to (native CSS `resize`, see style.css), and saves it again on every resize
+ * so the size sticks across reloads/sessions.
+ */
+function setupSelfVideoPipResize () {
+    const container = document.getElementById('self-video-container')
+    if (!container) {
+        return
+    }
+
+    try {
+        const saved = JSON.parse(localStorage.getItem(localStorageKeys.selfVideoPipSize))
+        if (saved && saved.width && saved.height) {
+            container.style.width = `${saved.width}px`
+            container.style.height = `${saved.height}px`
+        }
+    } catch (error) {
+        console.warn('Could not restore webcam PIP size:', error)
+    }
+
+    new ResizeObserver((entries) => {
+        const {width, height} = entries[0].contentRect
+        localStorage.setItem(localStorageKeys.selfVideoPipSize, JSON.stringify({width, height}))
+    }).observe(container)
+}
 
 /**
  * function to handle single sign on from openbot dashboard

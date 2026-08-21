@@ -43,6 +43,23 @@ export function WebRTC (connection) {
     let peerConnection = null
     let onDataMessageReceivedCallback = null
 
+    // The controller's own webcam/mic, sent to the robot so it can show the
+    // operator's face. videoSender/audioSender are tied to the current
+    // peerConnection and get re-bound on every reconnect (see attachLocalMedia);
+    // videoTrack/audioTrack are the actual hardware captures and persist across
+    // reconnects so toggling video/audio never needs a fresh permission prompt
+    // unless the track was actually stopped (by us or by the browser).
+    let videoTrack = null
+    let audioTrack = null
+    let videoSender = null
+    let audioSender = null
+    // What the user last asked for, independent of whether it is live right
+    // now - reconnects restore to this, not to some hardcoded default.
+    let webcamRequested = true
+    let micRequested = true
+    let onWebcamStateChanged = null
+    let onMicStateChanged = null
+
     // Events can arrive before start() has finished building the peer connection
     // (it now awaits the ICE server fetch), and candidates cannot be added before
     // the remote description is set. Both cases are buffered rather than dropped.
@@ -80,6 +97,7 @@ export function WebRTC (connection) {
                     new RTCSessionDescription({sdp: webRtcEvent.sdp, type: 'offer'})
                 )
                 await flushPendingCandidates()
+                await attachLocalMedia()
                 await doAnswer()
                 break
 
@@ -124,6 +142,195 @@ export function WebRTC (connection) {
         }
     }
 
+    /**
+     * Reserves sendrecv on the video/audio transceivers the robot's offer
+     * already created, independent of whether a real track is attached yet.
+     * This is what makes ensureTrack()/stopTrack() below able to turn the
+     * webcam/mic fully on and off later purely via replaceTrack() - no
+     * renegotiation is ever needed, which the robot side does not support.
+     * Runs once per call, right before the answer is created.
+     */
+    const attachLocalMedia = async () => {
+        for (const transceiver of peerConnection.getTransceivers()) {
+            const kind = transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind
+            if (kind !== 'video' && kind !== 'audio') {
+                continue
+            }
+            transceiver.direction = 'sendrecv'
+            if (kind === 'video') {
+                videoSender = transceiver.sender
+            } else {
+                audioSender = transceiver.sender
+            }
+        }
+
+        if (webcamRequested) {
+            await ensureTrack('video')
+        }
+        if (micRequested) {
+            await ensureTrack('audio')
+        }
+    }
+
+    /**
+     * Turns a webcam/mic track on: reuses it if still live (e.g. across a
+     * reconnect, just re-bound to the new peer connection's sender), otherwise
+     * prompts for a fresh capture. Denial/failure is non-fatal - the robot's
+     * own feed still plays either way.
+     */
+    const ensureTrack = async (kind) => {
+        let track = kind === 'video' ? videoTrack : audioTrack
+
+        if (!track || track.readyState !== 'live') {
+            try {
+                const constraints = kind === 'video' ? {video: true} : {audio: true}
+                const stream = await navigator.mediaDevices.getUserMedia(constraints)
+                track = kind === 'video' ? stream.getVideoTracks()[0] : stream.getAudioTracks()[0]
+                // Fires when the browser itself stops the track - e.g. the
+                // camera/mic indicator in the address bar - so the UI can
+                // reflect it and the user can restart it from the buttons.
+                track.onended = () => handleTrackEndedExternally(kind)
+            } catch (error) {
+                console.error(`WebRTC: could not access the ${kind === 'video' ? 'webcam' : 'microphone'}:`, error)
+                notifyState(kind, false)
+                return
+            }
+            if (kind === 'video') {
+                videoTrack = track
+            } else {
+                audioTrack = track
+            }
+        }
+
+        const sender = kind === 'video' ? videoSender : audioSender
+        if (sender) {
+            try {
+                await sender.replaceTrack(track)
+            } catch (error) {
+                console.error(`WebRTC: could not attach the ${kind} track:`, error)
+            }
+        }
+
+        if (kind === 'video') {
+            updateSelfVideo()
+            showSelfVideo(true)
+        }
+        notifyState(kind, true)
+    }
+
+    /**
+     * Turns a webcam/mic track fully off: stops the hardware capture (so the
+     * browser's camera/mic indicator actually clears) and clears the sender,
+     * without renegotiating.
+     */
+    const stopTrack = (kind) => {
+        const track = kind === 'video' ? videoTrack : audioTrack
+        const sender = kind === 'video' ? videoSender : audioSender
+
+        if (track) {
+            track.onended = null // this is us stopping it, not an external interruption
+            track.stop()
+        }
+        if (sender) {
+            sender.replaceTrack(null).catch((error) => console.error('WebRTC: could not clear sender track:', error))
+        }
+
+        if (kind === 'video') {
+            videoTrack = null
+            showSelfVideo(false)
+        } else {
+            audioTrack = null
+        }
+        notifyState(kind, false)
+    }
+
+    /**
+     * The browser (not us) ended a track - most commonly the user clicked
+     * "stop" on the camera/mic indicator in the address bar. Reflect it in the
+     * UI and in what the next reconnect should do: do not silently reacquire
+     * something the user was never asked about again.
+     */
+    const handleTrackEndedExternally = (kind) => {
+        console.warn(`WebRTC: ${kind} was stopped outside the app (e.g. the browser's camera/mic indicator)`)
+        const sender = kind === 'video' ? videoSender : audioSender
+        if (sender) {
+            sender.replaceTrack(null).catch(() => {})
+        }
+        if (kind === 'video') {
+            videoTrack = null
+            webcamRequested = false
+            showSelfVideo(false)
+        } else {
+            audioTrack = null
+            micRequested = false
+        }
+        notifyState(kind, false)
+    }
+
+    const notifyState = (kind, on) => {
+        if (kind === 'video' && onWebcamStateChanged) {
+            onWebcamStateChanged(on)
+        }
+        if (kind === 'audio' && onMicStateChanged) {
+            onMicStateChanged(on)
+        }
+    }
+
+    const updateSelfVideo = () => {
+        // Picture-in-picture of the operator's own feed, so they can see what
+        // the robot sees them see. Muted - it's a preview of the outgoing
+        // stream, playing it back would just echo the operator's own mic.
+        const selfVideo = document.getElementById('self-video')
+        if (selfVideo && videoTrack) {
+            selfVideo.srcObject = new MediaStream([videoTrack])
+        }
+    }
+
+    const showSelfVideo = (visible) => {
+        const container = document.getElementById('self-video-container')
+        if (container) {
+            container.style.display = visible ? 'block' : 'none'
+        }
+    }
+
+    /** Turns the operator's webcam on/off. Independent of the mic. */
+    this.setWebcamEnabled = (enabled) => {
+        webcamRequested = enabled
+        if (!peerConnection) {
+            return
+        }
+        if (enabled) {
+            ensureTrack('video')
+        } else {
+            stopTrack('video')
+        }
+    }
+
+    /** Turns the operator's mic on/off. Independent of the webcam. */
+    this.setMicEnabled = (enabled) => {
+        micRequested = enabled
+        if (!peerConnection) {
+            return
+        }
+        if (enabled) {
+            ensureTrack('audio')
+        } else {
+            stopTrack('audio')
+        }
+    }
+
+    // Fires whenever the on/off state changes for a reason other than the
+    // caller's own setWebcamEnabled()/setMicEnabled() call - i.e. when the
+    // browser itself stopped the track - so the UI buttons can stay in sync.
+    this.onWebcamStateChange = (callback) => {
+        onWebcamStateChanged = callback
+    }
+    this.onMicStateChange = (callback) => {
+        onMicStateChanged = callback
+    }
+
+    this.isWebcamAvailable = () => !!videoTrack
+
     const doAnswer = async () => {
         const answer = await peerConnection.createAnswer()
         await peerConnection.setLocalDescription(answer)
@@ -138,6 +345,11 @@ export function WebRTC (connection) {
         console.log('WebRTC: ICE servers:', iceServers.flatMap((server) => server.urls))
 
         peerConnection = new RTCPeerConnection({iceServers})
+        // Senders belong to the old peer connection and are invalid here;
+        // attachLocalMedia() re-binds videoTrack/audioTrack to fresh ones
+        // on the new one once the robot's offer arrives.
+        videoSender = null
+        audioSender = null
         peerConnection.onconnectionstatechange = () => {
             console.log('WebRTC connectionState:', peerConnection?.connectionState)
             if (peerConnection?.connectionState === 'connected') {
@@ -198,9 +410,6 @@ export function WebRTC (connection) {
             }
         }
         const video = document.getElementById('video')
-
-        video.srcObject = new MediaStream()
-        video.srcObject.getTracks().forEach((track) => peerConnection.addTrack(track))
 
         peerConnection.ontrack = (event) => {
             console.log('WebRTC ontrack: received remote track', event.track.kind)
@@ -275,6 +484,24 @@ export function WebRTC (connection) {
         pendingCandidates = []
         clearInterval(statsTimer)
         detachVideo()
+
+        if (videoTrack) {
+            videoTrack.onended = null
+            videoTrack.stop()
+            videoTrack = null
+        }
+        if (audioTrack) {
+            audioTrack.onended = null
+            audioTrack.stop()
+            audioTrack = null
+        }
+        videoSender = null
+        audioSender = null
+        const selfVideo = document.getElementById('self-video')
+        if (selfVideo) {
+            selfVideo.srcObject = null
+        }
+        showSelfVideo(false)
     }
 
     /**

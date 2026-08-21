@@ -44,9 +44,17 @@
         <!-- "muted" attributed is needed, otherwise most browsers will not auto-stream the video. -->
         <div style="width: 100%; height: 100%; position: relative;">
             <video id="video" muted autoplay playsinline></video>
+            <!-- "muted" here too - it's the operator's own mic/camera, playing it back would echo.
+                 Hidden until the webcam is actually on (see webRtc.setWebcamEnabled). Drag the
+                 bottom-right corner to resize; the size is remembered across sessions. -->
+            <div id="self-video-container">
+                <video id="self-video" muted autoplay playsinline></video>
+            </div>
             <div id="buttons"
                  style="display:flex; flex-direction: row; justify-content: left; align-items: start; gap: 1em; margin: 1em 0; position: absolute; left: 50%; bottom: 5%; transform: translateX(-50%); background: white; border-radius: 4px; box-shadow: 0px 2px 4px rgba(0, 0, 0, 0.15); padding: 5px;">
                 <img id="sound_button" class="button" src="icons/volume_off_black_24dp.svg" width="30"/>
+                <img id="webcam_button" class="button" src="icons/videocam_black_24dp.svg" width="30" title="Show my webcam to the robot"/>
+                <img id="mic_button" class="button" src="icons/mic_black_24dp.svg" width="30" title="Send my microphone to the robot"/>
                 <img id="mirror_button" class="button" src="icons/flip_black_24dp.svg" width="30"/>
                 <img id="camera_switch_button" class="button" src="icons/cameraswitch_black_24dp.svg" width="30"/>
                 <img id="fullscreen" class="button" src="icons/fullscreen_black_24dp.svg" width="30"/>
