@@ -5,8 +5,11 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 
 import androidx.annotation.NonNull;
@@ -103,9 +106,30 @@ public class PhoneController {
 
     if (videoView instanceof WebRTCSurfaceView) {
       videoServer.setView((WebRTCSurfaceView) videoView);
+      addVideoSourceToggle(viewGroup, context);
     } else if (videoView instanceof AutoFitSurfaceGlView) {
       videoServer.setView((AutoFitSurfaceGlView) videoView);
     }
+  }
+
+  /**
+   * Small floating button overlaid on the video: flips this phone's own screen
+   * between the controller's webcam (the default once a call connects) and the
+   * robot's own camera. Purely a local display choice - it never changes what
+   * is streamed out to the controller.
+   */
+  private void addVideoSourceToggle(ViewGroup viewGroup, Context context) {
+    Button toggle = new Button(context);
+    toggle.setText("🔄"); // cycle-arrows glyph, understandable without a label
+    toggle.setAlpha(0.6f);
+    FrameLayout.LayoutParams params =
+        new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    params.gravity = Gravity.BOTTOM | Gravity.END;
+    params.setMargins(0, 0, 32, 96);
+    toggle.setLayoutParams(params);
+    toggle.setOnClickListener(v -> ((WebRtcServer) videoServer).toggleVideoSource());
+    viewGroup.addView(toggle);
   }
 
   public void connect(Context context) {

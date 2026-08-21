@@ -3,13 +3,23 @@ package org.openbot.env;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.ToneGenerator;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
 import android.view.SurfaceView;
 import android.view.TextureView;
 import androidx.core.content.ContextCompat;
 import com.pedro.rtplibrary.view.OpenGlView;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.openbot.utils.AndGate;
@@ -28,9 +38,11 @@ import org.webrtc.EglBase;
 import org.webrtc.IceCandidate;
 import org.webrtc.MediaConstraints;
 import org.webrtc.MediaStream;
+import org.webrtc.MediaStreamTrack;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
+import org.webrtc.RtpSender;
 import org.webrtc.RtpTransceiver;
 import org.webrtc.SessionDescription;
 import org.webrtc.SurfaceTextureHelper;
@@ -63,6 +75,14 @@ public class WebRtcServer implements IVideoServer {
   private SurfaceViewRenderer view;
   private Size resolution = new Size(640, 360);
 
+  // Endpoint that mints short-lived TURN credentials, matching
+  // VITE_PUBLIC_ICE_SERVERS_URL in the web controller. Required whenever the robot
+  // and the controller are on different networks. Empty means STUN only.
+  private static final String ICE_SERVERS_URL = "https://indianbot-turn.sbayreddy.workers.dev";
+  private static final String FALLBACK_STUN_SERVER = "stun:stun.l.google.com:19302";
+
+  private volatile ArrayList<PeerConnection.IceServer> cachedIceServers = null;
+
   public static final String VIDEO_TRACK_ID = "ARDAMSv0";
   public static final int VIDEO_RESOLUTION_WIDTH = 640;
   public static final int VIDEO_RESOLUTION_HEIGHT = 360;
@@ -77,7 +97,14 @@ public class WebRtcServer implements IVideoServer {
   AudioTrack localAudioTrack;
   SurfaceTextureHelper surfaceTextureHelper;
   private PeerConnection peerConnection;
-  MediaStream mediaStream;
+  private RtpSender videoSender;
+  private RtpSender audioSender;
+  private VideoTrack remoteVideoTrack;
+  private AudioTrack remoteAudioTrack;
+  // Which feed is currently rendered on this phone's own screen. The
+  // controller's webcam is the default (see showControllerVideo()); this only
+  // tracks the LOCAL display choice and has no effect on what is streamed out.
+  private boolean displayingRobotCamera = false;
 
   private AndGate andGate;
   private Context context;
@@ -104,7 +131,93 @@ public class WebRtcServer implements IVideoServer {
 
     rootEglBase = EglBase.create();
 
+    // Fetched up front so the network call is never on the startServer() path,
+    // which may run on the main thread when the last AndGate condition is met.
+    prefetchIceServers();
+
     signalingHandler.handleControllerWebRtcEvents();
+  }
+
+  /**
+   * Fetches TURN credentials in the background and caches them for
+   * createPeerConnection(). Failures are logged and leave the cache empty, which
+   * degrades to STUN rather than blocking video from starting.
+   */
+  private void prefetchIceServers() {
+    if (ICE_SERVERS_URL.isEmpty()) {
+      Log.w(TAG, "ICE_SERVERS_URL is not set, remote connections will likely fail");
+      return;
+    }
+
+    new Thread(
+            () -> {
+              HttpURLConnection httpConnection = null;
+              try {
+                URL url = new URL(ICE_SERVERS_URL);
+                httpConnection = (HttpURLConnection) url.openConnection();
+                httpConnection.setConnectTimeout(10000);
+                httpConnection.setReadTimeout(10000);
+
+                int status = httpConnection.getResponseCode();
+                if (status != HttpURLConnection.HTTP_OK) {
+                  Log.e(TAG, "ICE server request failed with status " + status);
+                  return;
+                }
+
+                StringBuilder response = new StringBuilder();
+                try (BufferedReader reader =
+                    new BufferedReader(new InputStreamReader(httpConnection.getInputStream()))) {
+                  String line;
+                  while ((line = reader.readLine()) != null) {
+                    response.append(line);
+                  }
+                }
+
+                cachedIceServers = parseIceServers(new JSONObject(response.toString()));
+                Log.d(TAG, "Fetched " + cachedIceServers.size() + " ICE servers");
+              } catch (IOException | JSONException e) {
+                Log.e(TAG, "Could not fetch ICE servers: " + e);
+              } finally {
+                if (httpConnection != null) {
+                  httpConnection.disconnect();
+                }
+              }
+            })
+        .start();
+  }
+
+  /**
+   * Converts the endpoint's {"iceServers": [{urls, username, credential}, ...]}
+   * payload into WebRTC IceServer objects. "urls" may be a string or an array.
+   */
+  private ArrayList<PeerConnection.IceServer> parseIceServers(JSONObject body)
+      throws JSONException {
+    ArrayList<PeerConnection.IceServer> iceServers = new ArrayList<>();
+    JSONArray servers = body.getJSONArray("iceServers");
+
+    for (int i = 0; i < servers.length(); i++) {
+      JSONObject server = servers.getJSONObject(i);
+
+      ArrayList<String> urls = new ArrayList<>();
+      Object rawUrls = server.get("urls");
+      if (rawUrls instanceof JSONArray) {
+        JSONArray urlArray = (JSONArray) rawUrls;
+        for (int j = 0; j < urlArray.length(); j++) {
+          urls.add(urlArray.getString(j));
+        }
+      } else {
+        urls.add(rawUrls.toString());
+      }
+
+      PeerConnection.IceServer.Builder builder = PeerConnection.IceServer.builder(urls);
+      if (server.has("username") && server.has("credential")) {
+        builder.setUsername(server.getString("username"));
+        builder.setPassword(server.getString("credential"));
+      }
+      iceServers.add(builder.createIceServer());
+    }
+
+    return iceServers;
   }
 
   @Override
@@ -219,19 +332,102 @@ public class WebRtcServer implements IVideoServer {
   }
 
   private void startStreamingVideo() {
-    mediaStream = factory.createLocalMediaStream("ARDAMS");
-    mediaStream.addTrack(videoTrackFromCamera);
-    mediaStream.addTrack(localAudioTrack);
-    peerConnection.addStream(mediaStream);
+    // addStream()/MediaStream are Plan B-only; Unified Plan requires addTrack().
+    // addTrack() creates one transceiver per track, grouped under the given
+    // stream id so the controller sees them as one MediaStream on its end.
+    List<String> streamIds = Collections.singletonList("ARDAMS");
+    videoSender = peerConnection.addTrack(videoTrackFromCamera, streamIds);
+    audioSender = peerConnection.addTrack(localAudioTrack, streamIds);
+
+    // addTrack() alone leaves these transceivers at their default direction,
+    // which on some libwebrtc versions negotiates as sendonly. The controller
+    // needs to send its own webcam/mic back on these same m-lines, so both must
+    // explicitly allow receiving too. Must happen before doCall() builds the
+    // offer, since the offer's direction is what caps what the answer can do.
+    for (RtpTransceiver transceiver : peerConnection.getTransceivers()) {
+      RtpSender sender = transceiver.getSender();
+      if (sender != null && sender.track() != null) {
+        transceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV);
+      }
+    }
   }
 
   private void stopStreamingVideo() {
-    peerConnection.removeStream(mediaStream);
+    if (videoSender != null) {
+      peerConnection.removeTrack(videoSender);
+    }
+    if (audioSender != null) {
+      peerConnection.removeTrack(audioSender);
+    }
+  }
+
+  /**
+   * Default local display once a controller connects: the operator's webcam,
+   * filling this phone's screen. Runs on the WebRTC signaling thread (this is
+   * called from PeerConnection.Observer callbacks), so the actual View work is
+   * posted to the main thread.
+   */
+  private void showControllerVideo() {
+    if (remoteVideoTrack == null || view == null) {
+      return;
+    }
+    new Handler(Looper.getMainLooper())
+        .post(
+            () -> {
+              if (displayingRobotCamera) {
+                videoTrackFromCamera.removeSink(view);
+                displayingRobotCamera = false;
+              }
+              remoteVideoTrack.addSink(view);
+              view.setAlpha(1f);
+              view.bringToFront();
+            });
+  }
+
+  /**
+   * Switches the local display to the robot's own camera - e.g. so a bystander
+   * next to the robot can confirm what it sees. Does not affect what is
+   * streamed to the controller, which always carries the robot's own camera.
+   */
+  private void showRobotCamera() {
+    if (view == null) {
+      return;
+    }
+    new Handler(Looper.getMainLooper())
+        .post(
+            () -> {
+              if (remoteVideoTrack != null) {
+                remoteVideoTrack.removeSink(view);
+              }
+              videoTrackFromCamera.addSink(view);
+              displayingRobotCamera = true;
+              view.setAlpha(1f);
+              view.bringToFront();
+            });
+  }
+
+  /** No controller connected: nothing useful to show, so go back to hidden. */
+  private void hideVideoView() {
+    if (view == null) {
+      return;
+    }
+    new Handler(Looper.getMainLooper()).post(() -> view.setAlpha(0f));
+  }
+
+  /** Flips which feed is shown locally. Wired to a UI toggle in PhoneController. */
+  public void toggleVideoSource() {
+    if (displayingRobotCamera) {
+      showControllerVideo();
+    } else {
+      showRobotCamera();
+    }
   }
 
   private void stopServer() {
-    mediaStream.removeTrack(videoTrackFromCamera);
-    mediaStream.removeTrack(localAudioTrack);
+    stopStreamingVideo();
+    remoteVideoTrack = null;
+    remoteAudioTrack = null;
+    displayingRobotCamera = false;
     view.release();
     stopClient();
   }
@@ -241,18 +437,19 @@ public class WebRtcServer implements IVideoServer {
   }
 
   private void doCall() {
+    // No OfferToReceiveAudio/Video constraints here: under Unified Plan
+    // libwebrtc still honors those legacy flags by force-downgrading the
+    // offered transceiver direction (to sendonly) regardless of the explicit
+    // SEND_RECV set in startStreamingVideo(), which caps every answer at
+    // recvonly and blocks the controller's webcam/mic from ever being received.
     MediaConstraints sdpMediaConstraints = new MediaConstraints();
-
-    sdpMediaConstraints.mandatory.add(
-        new MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"));
-    sdpMediaConstraints.mandatory.add(
-        new MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"));
 
     peerConnection.createOffer(
         new SimpleSdpObserver() {
           @Override
           public void onCreateSuccess(SessionDescription sessionDescription) {
             peerConnection.setLocalDescription(new SimpleSdpObserver(), sessionDescription);
+            Log.i(TAG, "Local offer " + sessionDescription.description);
             JSONObject message = new JSONObject();
             try {
               message.put("type", "offer");
@@ -272,13 +469,22 @@ public class WebRtcServer implements IVideoServer {
   }
 
   private PeerConnection createPeerConnection(PeerConnectionFactory factory) {
-    ArrayList<PeerConnection.IceServer> iceServers = new ArrayList<>();
+    ArrayList<PeerConnection.IceServer> iceServers = cachedIceServers;
 
-    PeerConnection.IceServer stunServer =
-        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer();
-    iceServers.add(stunServer);
+    if (iceServers == null) {
+      // Prefetch has not finished, or the endpoint is unreachable. STUN alone only
+      // works when the controller is on the same network or behind a friendly NAT.
+      Log.w(TAG, "No TURN credentials available, falling back to STUN only");
+      iceServers = new ArrayList<>();
+      iceServers.add(
+          PeerConnection.IceServer.builder(FALLBACK_STUN_SERVER).createIceServer());
+    }
 
     PeerConnection.RTCConfiguration rtcConfig = new PeerConnection.RTCConfiguration(iceServers);
+    // getTransceivers() in startStreamingVideo() is a Unified Plan-only API and
+    // aborts the process with "Check failed: IsUnifiedPlan()" under the default
+    // (Plan B) semantics, so this must be set explicitly.
+    rtcConfig.sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN;
     MediaConstraints pcConstraints = new MediaConstraints();
 
     PeerConnection.Observer pcObserver =
@@ -340,12 +546,9 @@ public class WebRtcServer implements IVideoServer {
 
           @Override
           public void onAddStream(MediaStream mediaStream) {
+            // Plan B-only callback; with Unified Plan (see createPeerConnection())
+            // remote tracks arrive via onAddTrack()/onTrack() below instead.
             Log.d(TAG, "onAddStream: " + mediaStream.videoTracks.size());
-            VideoTrack remoteVideoTrack = mediaStream.videoTracks.get(0);
-            AudioTrack remoteAudioTrack = mediaStream.audioTracks.get(0);
-            remoteAudioTrack.setEnabled(true);
-            remoteVideoTrack.setEnabled(true);
-            remoteVideoTrack.addSink(view);
           }
 
           @Override
@@ -364,7 +567,21 @@ public class WebRtcServer implements IVideoServer {
           }
 
           @Override
-          public void onAddTrack(RtpReceiver rtpReceiver, MediaStream[] mediaStreams) {}
+          public void onAddTrack(RtpReceiver rtpReceiver, MediaStream[] mediaStreams) {
+            // Unified Plan reports the controller's webcam/mic here instead of
+            // onAddStream() - our own tracks are local, so this is always the
+            // controller's.
+            MediaStreamTrack track = rtpReceiver.track();
+            Log.d(TAG, "onAddTrack: " + (track != null ? track.kind() : "null"));
+            if (track instanceof VideoTrack) {
+              remoteVideoTrack = (VideoTrack) track;
+              remoteVideoTrack.setEnabled(true);
+              showControllerVideo();
+            } else if (track instanceof AudioTrack) {
+              remoteAudioTrack = (AudioTrack) track;
+              remoteAudioTrack.setEnabled(true);
+            }
+          }
 
           @Override
           public void onTrack(RtpTransceiver transceiver) {}
@@ -392,7 +609,9 @@ public class WebRtcServer implements IVideoServer {
 
     videoTrackFromCamera = factory.createVideoTrack(VIDEO_TRACK_ID, videoSource);
     videoTrackFromCamera.setEnabled(true);
-    videoTrackFromCamera.addSink(view);
+    // Not sunk to the view here: the controller's webcam is the default local
+    // display (see showControllerVideo()). This track still streams out to the
+    // controller regardless of what is shown on this screen.
 
     // create an AudioSource instance
     audioSource = factory.createAudioSource(audioConstraints);
