@@ -4,10 +4,12 @@ export default defineConfig({
   root: 'client',
   envDir: '..',
   server: {
-    port: 8081
+    port: 8081,
+    host: true
   },
   preview: {
-    port: 8081
+    port: 8081,
+    host: true
   },
   build: {
     outDir: '../build',

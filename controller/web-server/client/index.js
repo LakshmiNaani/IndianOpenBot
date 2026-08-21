@@ -12,15 +12,15 @@ import {Keyboard} from './keyboardHandlers/keyboard.js'
 import {BotMessageHandler} from './keyboardHandlers/bot-message-handler'
 import {Commands} from './keyboardHandlers/commands'
 import {RemoteKeyboard} from './keyboardHandlers/remote_keyboard'
-import {WebRTC} from './webRTC/webrtc.js'
 import {signInWithCustomToken} from 'firebase/auth'
 import {auth, googleSigIn, googleSignOut} from './firebase/authentication'
 import {localStorageKeys} from './utils/constants'
 
-const connection = new Connection();
+const connection = new Connection()
+// Module scope so sign out can tear the video down too, not just the keyboard handler.
+const botMessageHandler = new BotMessageHandler(connection);
 (async () => {
     const keyboard = new Keyboard()
-    const botMessageHandler = new BotMessageHandler(connection)
 
     const onData = data => {
         const msg = JSON.parse(data)
@@ -32,7 +32,6 @@ const connection = new Connection();
     }
 
     await connection.start(onData)
-    const webRtc = new WebRTC(connection)
     const sendToBot = (key) => {
         const msg = JSON.parse(key)
         let commands = {}
@@ -57,9 +56,7 @@ const connection = new Connection();
         const keyPressObj = {KEYPRESS: key}
         console.log(keyPressObj.KEYPRESS.key)
         if (keyPressObj.KEYPRESS.key === 'Escape') {
-            if (webRtc != null) {
-                webRtc.stop()
-            }
+            botMessageHandler.stopVideo()
         }
         remoteKeyboard.processKey(keyPressObj.KEYPRESS)
     }
@@ -115,9 +112,24 @@ function sendId() {
 }
 
 /**
+ * function to leave the signaling room without dropping the websocket, so the
+ * robot stops broadcasting to this client until it signs in again
+ */
+function leaveRoom() {
+    if (signedInUser === null) {
+        return
+    }
+    connection.send(JSON.stringify({leave: signedInUser.email}))
+}
+
+/**
  * function to handle signOut from google account
  */
 function signOut() {
+    // Tear the video down first: the peer connection is independent of the auth
+    // state, so without this the robot's feed keeps playing after signing out.
+    botMessageHandler.stopVideo()
+    leaveRoom()
     signedInUser = null
     localStorage.setItem(localStorageKeys.user, null)
     localStorage.setItem(localStorageKeys.isSignIn, false.toString())
@@ -212,6 +224,34 @@ export const deleteCookie = (name) => {
 
 handleServerDetailsOnSSO()
 handleAuthChangedOnRefresh()
+setupSelfVideoPipResize()
+
+/**
+ * Restores the operator's webcam PIP box to whatever size it was last dragged
+ * to (native CSS `resize`, see style.css), and saves it again on every resize
+ * so the size sticks across reloads/sessions.
+ */
+function setupSelfVideoPipResize () {
+    const container = document.getElementById('self-video-container')
+    if (!container) {
+        return
+    }
+
+    try {
+        const saved = JSON.parse(localStorage.getItem(localStorageKeys.selfVideoPipSize))
+        if (saved && saved.width && saved.height) {
+            container.style.width = `${saved.width}px`
+            container.style.height = `${saved.height}px`
+        }
+    } catch (error) {
+        console.warn('Could not restore webcam PIP size:', error)
+    }
+
+    new ResizeObserver((entries) => {
+        const {width, height} = entries[0].contentRect
+        localStorage.setItem(localStorageKeys.selfVideoPipSize, JSON.stringify({width, height}))
+    }).observe(container)
+}
 
 /**
  * function to handle single sign on from openbot dashboard

@@ -14,9 +14,17 @@ import {ErrorDisplay} from '../utils/error-display.js'
  * @constructor
  */
 export function Connection () {
+    // Replaced once start() has a socket. Until then calls are dropped rather
+    // than throwing, since sign in/out can fire before the socket is up.
+    this.send = () => {
+        console.warn('Connection: not connected yet, message dropped')
+    }
+    this.stop = () => {}
+
     const connectToServer = async () => {
-        const ws = new WebSocket(`ws://${window.location.hostname}:8080/ws`)
-        // const ws = new WebSocket(`ws://verdant-imported-peanut.glitch.me`);
+        const signalingServerUrl = import.meta.env.VITE_PUBLIC_SIGNALING_SERVER_URL || `ws://${window.location.hostname}:8080/ws`
+
+        const ws = new WebSocket(signalingServerUrl)
         return new Promise((resolve, reject) => {
             const timer = setInterval(() => {
                 if (ws.readyState === 1) {
